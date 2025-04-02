@@ -12,7 +12,7 @@
 
 # Standard library imports
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional
 
 # Third party imports
 import numpy as np
@@ -33,7 +33,7 @@ from optimization.quadratic_program import QuadraticProgram
 # TODO:
 
 # [ ] Add classes:
-#    [ ] MinVariance
+#    [x] MinVariance
 #    [ ] MaxReturn
 #    [ ] MaxSharpe
 #    [ ] MaxUtility
@@ -101,11 +101,11 @@ class Optimization(ABC):
 
     def __init__(self,
                  params: Optional[OptimizationParameter] = None,
-                 constraints: Constraints = Constraints(),
+                 constraints: Optional[Constraints] = None,
                  **kwargs):
         self.params = OptimizationParameter() if params is None else params
         self.params.update(**kwargs)
-        self.constraints = constraints
+        self.constraints = Constraints() if constraints is None else constraints
         self.objective: Objective = Objective()
         self.results = {}
 
@@ -181,14 +181,35 @@ class Optimization(ABC):
 
 
 
+class EmptyOptimization(Optimization):
+    '''
+    Placeholder class for an optimization.
+    This class is intended to be a placeholder and should not be used directly.
+    '''
+
+    def set_objective(self, optimization_data: OptimizationData) -> None:
+        raise NotImplementedError(
+            'EmptyOptimization is a placeholder and does not implement set_objective.'
+        )
+
+    def solve(self) -> None:
+        raise NotImplementedError(
+            'EmptyOptimization is a placeholder and does not implement solve.'
+        )
+
+
 
 
 class LeastSquares(Optimization):
 
     def __init__(self,
+                 constraints: Optional[Constraints] = None,
                  covariance: Optional[Covariance] = None,
                  **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(
+            constraints=constraints,
+            **kwargs
+        )
         self.covariance = covariance
 
     def set_objective(self, optimization_data: OptimizationData) -> None:
@@ -223,7 +244,7 @@ class LeastSquares(Optimization):
 class MeanVariance(Optimization):
 
     def __init__(self,
-                 constraints: Constraints,
+                 constraints: Optional[Constraints] = None,
                  covariance: Optional[Covariance] = None,
                  expected_return: Optional[ExpectedReturn] = None,
                  risk_aversion: float = 1,
@@ -248,3 +269,61 @@ class MeanVariance(Optimization):
 
     def solve(self) -> None:
         return super().solve()
+
+
+
+class MinVariance(Optimization):
+
+    def __init__(self,
+                 constraints: Optional[Constraints] = None,
+                 covariance: Optional[Covariance] = None,
+                 **kwargs):
+        super().__init__(
+            constraints=constraints,
+            **kwargs
+        )
+        self.covariance = Covariance() if covariance is None else covariance
+
+    def set_objective(self, optimization_data: OptimizationData) -> None:
+        X = optimization_data['return_series']
+        covmat = self.covariance.estimate(X=X, inplace=False)
+        mu = np.zeros(X.shape[1])
+        self.objective = Objective(
+            q = mu ,
+            P = covmat * 2,
+        )
+        return None
+
+    def solve(self) -> None:
+        if self.params.get('solver_name') == 'analytical':
+            GhAb = self.constraints.to_GhAb()
+            if GhAb['G'] is not None:
+                raise ValueError(
+                    'Analytical solution does not exist whith inequality constraints.'
+                )
+            A = GhAb['A']
+            b = GhAb['b']
+            # If b is scalar, convert it to a 1D array
+            if isinstance(b, (int, float)):
+                b = np.array([b])
+            elif b.ndim == 0:
+                b = np.array([b])
+
+            P = self.objective.coefficients['P']
+            P_inv = np.linalg.inv(P)
+
+            AP_invA = A @ P_inv @ A.T
+            if AP_invA.shape[0] > 1:
+                AP_invA_inv = np.linalg.inv(AP_invA)
+            else:
+                AP_invA_inv = 1 / AP_invA
+            x = pd.Series(P_inv @ A.T @ AP_invA_inv @ b,
+                          index=self.constraints.ids)      
+            self.results.update({
+                'weights': x.to_dict(),
+                'status': True,
+            })
+            return None
+        else:
+            return super().solve()
+
